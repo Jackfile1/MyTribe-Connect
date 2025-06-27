@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
-import { auth, db } from './firebase';
+import { auth, db, storage } from './firebase';
 import { 
   collection, 
   query, 
@@ -14,12 +14,19 @@ import {
   serverTimestamp,
   writeBatch,
   deleteDoc,
-  limit
+  limit,
+  getDoc
 } from 'firebase/firestore';
 import {
   signInWithEmailAndPassword,
   signOut
 } from 'firebase/auth';
+import { 
+  ref, 
+  uploadBytesResumable, 
+  getDownloadURL, 
+  deleteObject 
+} from "firebase/storage";
 
 // Constants
 const ORDERED_DAYS = [
@@ -166,6 +173,15 @@ function App() {
 
   // New Week Selection State
   const [selectedDate, setSelectedDate] = useState('');
+  
+  // Resource Upload State
+  const [trainingMaterials, setTrainingMaterials] = useState([]);
+  const [supportDocs, setSupportDocs] = useState([]);
+  const [trainingFile, setTrainingFile] = useState(null);
+  const [supportFile, setSupportFile] = useState(null);
+  const [trainingFileName, setTrainingFileName] = useState('');
+  const [supportFileName, setSupportFileName] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
 // Authentication Effect
 useEffect(() => {
   const unsubscribe = auth.onAuthStateChanged(async (user) => {
@@ -368,7 +384,6 @@ const setupCommonListeners = () => {
     personalHistoryUnsubscribe();
   };
 };
-
 // Authentication Functions
 const handleLogin = async (email, password) => {
   try {
@@ -402,6 +417,170 @@ const handleLogout = async () => {
     console.error('Logout error:', error);
   }
 };
+
+// Resource Upload Functions
+const handleUpload = async (type) => {
+  if ((type === 'training' && !trainingFile) || (type === 'support' && !supportFile)) {
+    alert('Please select a file to upload');
+    return;
+  }
+  
+  const file = type === 'training' ? trainingFile : supportFile;
+  const fileName = type === 'training' ? trainingFileName : supportFileName;
+  
+  // Create a unique file name
+  const timestamp = new Date().getTime();
+  const fileExtension = file.name.split('.').pop();
+  const uniqueFileName = `${fileName.replace(/\s+/g, '_')}_${timestamp}.${fileExtension}`;
+  
+  // Create a reference to the file in Firebase Storage
+  const storageRef = ref(storage, `resources/${type}/${uniqueFileName}`);
+  
+  // Upload the file
+  const uploadTask = uploadBytesResumable(storageRef, file);
+  
+  // Monitor the upload progress
+  uploadTask.on('state_changed', 
+    (snapshot) => {
+      const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+      setUploadProgress(progress);
+    },
+    (error) => {
+      console.error('Upload error:', error);
+      alert('Error uploading file');
+      setUploadProgress(0);
+    },
+    async () => {
+      // Upload completed successfully
+      const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+      
+      // Add the file info to Firestore
+      const resourceData = {
+        name: fileName,
+        fileName: uniqueFileName,
+        type: fileExtension.toUpperCase(),
+        url: downloadURL,
+        uploadedBy: currentUser.uid,
+        uploadedAt: serverTimestamp(),
+        category: type
+      };
+      
+      await addDoc(collection(db, 'resources'), resourceData);
+      
+      // Reset the form
+      if (type === 'training') {
+        setTrainingFile(null);
+        setTrainingFileName('');
+        // Refresh the training materials list
+        const trainingQuery = query(
+          collection(db, 'resources'),
+          where('category', '==', 'training'),
+          orderBy('uploadedAt', 'desc')
+        );
+        const trainingSnapshot = await getDocs(trainingQuery);
+        const trainingDocs = [];
+        trainingSnapshot.forEach(doc => {
+          trainingDocs.push({ id: doc.id, ...doc.data() });
+        });
+        setTrainingMaterials(trainingDocs);
+      } else {
+        setSupportFile(null);
+        setSupportFileName('');
+        // Refresh the support docs list
+        const supportQuery = query(
+          collection(db, 'resources'),
+          where('category', '==', 'support'),
+          orderBy('uploadedAt', 'desc')
+        );
+        const supportSnapshot = await getDocs(supportQuery);
+        const supportDocs = [];
+        supportSnapshot.forEach(doc => {
+          supportDocs.push({ id: doc.id, ...doc.data() });
+        });
+        setSupportDocs(supportDocs);
+      }
+      
+      setUploadProgress(0);
+      alert('File uploaded successfully');
+    }
+  );
+};
+
+const deleteResource = async (resourceId, type) => {
+  if (!isManager) return;
+  
+  if (window.confirm('Are you sure you want to delete this resource?')) {
+    try {
+      // Get the resource data
+      const resourceRef = doc(db, 'resources', resourceId);
+      const resourceSnap = await getDoc(resourceRef);
+      
+      if (resourceSnap.exists()) {
+        const resourceData = resourceSnap.data();
+        
+        // Delete the file from Storage
+        const storageRef = ref(storage, `resources/${type}/${resourceData.fileName}`);
+        await deleteObject(storageRef);
+        
+        // Delete the document from Firestore
+        await deleteDoc(resourceRef);
+        
+        // Update the state
+        if (type === 'training') {
+          setTrainingMaterials(prev => prev.filter(item => item.id !== resourceId));
+        } else {
+          setSupportDocs(prev => prev.filter(item => item.id !== resourceId));
+        }
+        
+        alert('Resource deleted successfully');
+      }
+    } catch (error) {
+      console.error('Error deleting resource:', error);
+      alert('Error deleting resource');
+    }
+  }
+};
+
+// Load resources effect
+useEffect(() => {
+  const loadResources = async () => {
+    try {
+      // Load training materials
+      const trainingQuery = query(
+        collection(db, 'resources'),
+        where('category', '==', 'training'),
+        orderBy('uploadedAt', 'desc')
+      );
+      
+      const trainingSnapshot = await getDocs(trainingQuery);
+      const trainingDocs = [];
+      trainingSnapshot.forEach(doc => {
+        trainingDocs.push({ id: doc.id, ...doc.data() });
+      });
+      setTrainingMaterials(trainingDocs);
+      
+      // Load support documents
+      const supportQuery = query(
+        collection(db, 'resources'),
+        where('category', '==', 'support'),
+        orderBy('uploadedAt', 'desc')
+      );
+      
+      const supportSnapshot = await getDocs(supportQuery);
+      const supportDocs = [];
+      supportSnapshot.forEach(doc => {
+        supportDocs.push({ id: doc.id, ...doc.data() });
+      });
+      setSupportDocs(supportDocs);
+    } catch (error) {
+      console.error('Error loading resources:', error);
+    }
+  };
+  
+  if (currentUser) {
+    loadResources();
+  }
+}, [currentUser]);
 // Check-in and Support Handlers
 const handleCheckInSubmit = async (e) => {
   e.preventDefault();
@@ -929,6 +1108,7 @@ return (
                   <option value="phone">Phone Call</option>
                   <option value="email">Email</option>
                   <option value="in-person">In Person</option>
+                  <option value="cliq">Cliq Message</option>
                 </select>
               </div>
 
@@ -1142,17 +1322,73 @@ return (
         </div>
       </div>
 
-      {/* Internal Training Resources */}
+      {/* Internal Training Resources with Upload Functionality */}
       <div className="resource-card">
         <div className="resource-card-content">
           <h3>My Tribe Training Materials</h3>
           <p>Internal resources and training materials for team development.</p>
-          <ul className="resource-links">
-            <li>Wellbeing Support Guidelines</li>
-            <li>Team Building Activities</li>
-            <li>Mental Health Awareness</li>
-            <li>Support Pathway Documentation</li>
-          </ul>
+          
+          {/* Display uploaded resources */}
+          {trainingMaterials.length > 0 && (
+            <div className="uploaded-resources">
+              <h4>Available Materials:</h4>
+              <ul className="resource-links">
+                {trainingMaterials.map(material => (
+                  <li key={material.id}>
+                    <a href={material.url} target="_blank" rel="noopener noreferrer">
+                      {material.name} ({material.type})
+                    </a>
+                    {isManager && (
+                      <button 
+                        onClick={() => deleteResource(material.id, 'training')}
+                        className="delete-resource-btn"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          
+          {/* Upload functionality for managers */}
+          {isManager && (
+            <div className="resource-upload">
+              <h4>Upload New Material:</h4>
+              <div className="upload-form">
+                <input
+                  type="file"
+                  onChange={(e) => setTrainingFile(e.target.files[0])}
+                  className="file-input"
+                />
+                <input
+                  type="text"
+                  placeholder="Resource name"
+                  value={trainingFileName}
+                  onChange={(e) => setTrainingFileName(e.target.value)}
+                  className="black-white-input"
+                />
+                <button 
+                  onClick={() => handleUpload('training')}
+                  disabled={!trainingFile || !trainingFileName}
+                  className="black-white-button"
+                >
+                  Upload
+                </button>
+              </div>
+              {uploadProgress > 0 && uploadProgress < 100 && (
+                <div className="upload-progress">
+                  <div 
+                    className="progress-bar" 
+                    style={{width: `${uploadProgress}%`}}
+                  ></div>
+                  <span>{uploadProgress}%</span>
+                </div>
+              )}
+            </div>
+          )}
+          
           <div className="resource-card-links">
             <a href="/training-hub" 
                className="black-white-button">
@@ -1166,17 +1402,73 @@ return (
         </div>
       </div>
 
-      {/* Support Documentation */}
+      {/* Support Documentation with Upload Functionality */}
       <div className="resource-card">
         <div className="resource-card-content">
           <h3>Support Documentation</h3>
           <p>Essential guidelines and documentation for wellbeing support.</p>
-          <ul className="resource-links">
-            <li>Emergency Response Procedures</li>
-            <li>Risk Assessment Templates</li>
-            <li>Referral Pathways</li>
-            <li>Contact Information Directory</li>
-          </ul>
+          
+          {/* Display uploaded resources */}
+          {supportDocs.length > 0 && (
+            <div className="uploaded-resources">
+              <h4>Available Documents:</h4>
+              <ul className="resource-links">
+                {supportDocs.map(doc => (
+                  <li key={doc.id}>
+                    <a href={doc.url} target="_blank" rel="noopener noreferrer">
+                      {doc.name} ({doc.type})
+                    </a>
+                    {isManager && (
+                      <button 
+                        onClick={() => deleteResource(doc.id, 'support')}
+                        className="delete-resource-btn"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          
+          {/* Upload functionality for managers */}
+          {isManager && (
+            <div className="resource-upload">
+              <h4>Upload New Document:</h4>
+              <div className="upload-form">
+                <input
+                  type="file"
+                  onChange={(e) => setSupportFile(e.target.files[0])}
+                  className="file-input"
+                />
+                <input
+                  type="text"
+                  placeholder="Document name"
+                  value={supportFileName}
+                  onChange={(e) => setSupportFileName(e.target.value)}
+                  className="black-white-input"
+                />
+                <button 
+                  onClick={() => handleUpload('support')}
+                  disabled={!supportFile || !supportFileName}
+                  className="black-white-button"
+                >
+                  Upload
+                </button>
+              </div>
+              {uploadProgress > 0 && uploadProgress < 100 && (
+                <div className="upload-progress">
+                  <div 
+                    className="progress-bar" 
+                    style={{width: `${uploadProgress}%`}}
+                  ></div>
+                  <span>{uploadProgress}%</span>
+                </div>
+              )}
+            </div>
+          )}
+          
           <div className="resource-card-links">
             <a href="/support-docs" 
                className="black-white-button">
@@ -1192,7 +1484,6 @@ return (
     </div>
   </div>
 )}
-
 {currentPage === 'team' && (
   <div className="team-page">
     <h2>Team Page</h2>
@@ -1335,7 +1626,6 @@ return (
     </div>
   </div>
 )}
-
 {isManager && currentPage === 'manager' && (
   <div className="manager-dashboard">
     <div className="dashboard-tabs">
@@ -1422,7 +1712,6 @@ return (
           </div>
         </div>
       )}
-
       {activeManagerTab === 'handled' && (
         <div className="handled-requests-section">
           <h3>Handled Support Requests</h3>
@@ -1950,3 +2239,4 @@ return (
 }
 
 export default App;
+
