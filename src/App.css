@@ -186,7 +186,6 @@ main {
   margin-bottom: 20px;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
-
 /* On-Call Schedule New Styles */
 .create-week-container {
   background-color: #ffffff;
@@ -277,7 +276,6 @@ textarea.black-white-input {
   background-position: right 8px center;
   background-size: 16px;
 }
-
 /* Checkbox Styles */
 .checkbox-label {
   display: flex;
@@ -464,7 +462,6 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   left: 0;
   color: #000000;
 }
-
 /* Team Page Styles */
 .team-page {
   padding: 20px;
@@ -613,7 +610,6 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   grid-template-columns: 2fr 1fr 1fr;
   gap: 10px;
 }
-
 /* Updated Schedule Day Styles */
 .schedule-day {
   padding: 15px;
@@ -703,7 +699,6 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   justify-content: flex-end;
   gap: 10px;
 }
-
 /* Handled Requests Styles */
 .handled-request-card {
   background: #ffffff;
@@ -797,7 +792,6 @@ input[type="month"]::-webkit-calendar-picker-indicator {
   padding-top: 15px;
   border-top: 1px solid #eee;
 }
-
 /* Status Indicators */
 .support-requested,
 .support-indicator {
@@ -935,7 +929,6 @@ input[type="month"]::-webkit-calendar-picker-indicator {
     gap: 15px;
   }
 }
-
 @media (max-width: 480px) {
   .dashboard-tabs {
     flex-direction: column;
@@ -1033,7 +1026,6 @@ a {
 a:hover {
   text-decoration: none;
 }
-
 /* Additional Utility Classes */
 .text-center {
   text-align: center;
@@ -1158,4 +1150,71 @@ button {
 
 .oncall-controls button {
   min-width: 120px;
+}
+/* Resource upload styles */
+.uploaded-resources {
+  margin: 15px 0;
+  padding: 10px;
+  background-color: #f8f8f8;
+  border-radius: 8px;
+}
+
+.resource-upload {
+  margin: 15px 0;
+  padding: 15px;
+  background-color: #f8f8f8;
+  border-radius: 8px;
+  border: 1px dashed #000000;
+}
+
+.upload-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.file-input {
+  padding: 8px;
+  border: 1px solid #000000;
+  border-radius: 12px;
+}
+
+.upload-progress {
+  margin-top: 10px;
+  height: 20px;
+  background-color: #e0e0e0;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-bar {
+  height: 100%;
+  background-color: #000000;
+  transition: width 0.3s ease;
+}
+
+.upload-progress span {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.delete-resource-btn {
+  background: none;
+  border: none;
+  color: #ff0000;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  margin-left: 8px;
+}
+
+.delete-resource-btn:hover {
+  color: #cc0000;
 }
