@@ -15,11 +15,14 @@ import {
   writeBatch,
   deleteDoc,
   limit,
-  getDoc
+  getDoc,
+  setDoc
 } from 'firebase/firestore';
 import {
   signInWithEmailAndPassword,
-  signOut
+  signOut,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail
 } from 'firebase/auth';
 import { 
   ref, 
@@ -182,6 +185,23 @@ function App() {
   const [trainingFileName, setTrainingFileName] = useState('');
   const [supportFileName, setSupportFileName] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
+
+  // Team Management State
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [houses, setHouses] = useState(['Aurora', 'Lotus', 'Phoenix', 'Nova']); // Default houses
+  const [selectedHouse, setSelectedHouse] = useState('');
+  const [showAddMemberDialog, setShowAddMemberDialog] = useState(false);
+  const [showEditMemberDialog, setShowEditMemberDialog] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [newMember, setNewMember] = useState({
+    email: '',
+    name: '',
+    role: '',
+    primaryHouse: '',
+    additionalHouses: [],
+    password: ''
+  });
+  const [selectedMember, setSelectedMember] = useState(null);
 // Authentication Effect
 useEffect(() => {
   const unsubscribe = auth.onAuthStateChanged(async (user) => {
@@ -250,7 +270,7 @@ const setupManagerListeners = () => {
     }
   );
 
-  // Strategy Reviews Listener
+  // Strategy Reviews Listener - UPDATED to properly handle archived strategies
   const strategyUnsubscribe = onSnapshot(
     collection(db, 'strategies'),
     (snapshot) => {
@@ -260,18 +280,21 @@ const setupManagerListeners = () => {
       
       snapshot.forEach((doc) => {
         const data = doc.data();
-        if (!data.approved && !data.archived) {
-          pending.push({
+        if (data.archived) {
+          // This is an archived strategy
+          archived.push({
             id: doc.id,
             ...data
           });
         } else if (data.approved) {
+          // This is an approved strategy
           approved.push({
             id: doc.id,
             ...data
           });
-        } else if (data.archived) {
-          archived.push({
+        } else {
+          // This is a pending strategy
+          pending.push({
             id: doc.id,
             ...data
           });
@@ -418,6 +441,194 @@ const handleLogout = async () => {
   }
 };
 
+// Team Management Functions
+// Load team members
+useEffect(() => {
+  if (isManager && currentUser) {
+    // Check if houses or primaryHouse exists before querying
+    if (!currentUser.houses && !currentUser.primaryHouse) {
+      console.log('No houses assigned to manager');
+      return;
+    }
+    
+    const housesToQuery = currentUser.houses || [currentUser.primaryHouse];
+    
+    // Make sure we have valid houses to query
+    if (!housesToQuery.length || housesToQuery.includes(undefined)) {
+      console.log('Invalid houses data');
+      return;
+    }
+    
+    let teamQuery;
+    
+    // If a specific house is selected, only show members from that house
+    if (selectedHouse) {
+      teamQuery = onSnapshot(
+        query(
+          collection(db, 'users'),
+          where('primaryHouse', '==', selectedHouse)
+        ),
+        (snapshot) => {
+          const members = [];
+          snapshot.forEach(doc => {
+            members.push({ id: doc.id, ...doc.data() });
+          });
+          setTeamMembers(members);
+          console.log('Loaded team members for house:', selectedHouse, members);
+        },
+        (error) => {
+          console.error('Error loading team members:', error);
+        }
+      );
+    } else {
+      // If no house is selected, show all members
+      teamQuery = onSnapshot(
+        collection(db, 'users'),
+        (snapshot) => {
+          const members = [];
+          snapshot.forEach(doc => {
+            members.push({ id: doc.id, ...doc.data() });
+          });
+          setTeamMembers(members);
+          console.log('Loaded all team members:', members);
+        },
+        (error) => {
+          console.error('Error loading team members:', error);
+        }
+      );
+    }
+    
+    return () => teamQuery();
+  }
+}, [isManager, currentUser, selectedHouse]);
+
+// Handle adding a new team member
+const handleAddMember = async (e) => {
+  e.preventDefault();
+  try {
+    // Create auth user
+    const userCredential = await createUserWithEmailAndPassword(
+      auth,
+      newMember.email,
+      newMember.password
+    );
+    
+    // Prepare houses array - ensure it's not undefined
+    const houses = [newMember.primaryHouse];
+    if (newMember.additionalHouses && newMember.additionalHouses.length > 0) {
+      newMember.additionalHouses.forEach(house => {
+        if (house && !houses.includes(house)) {
+          houses.push(house);
+        }
+      });
+    }
+    
+    // Create user document
+    await setDoc(doc(db, 'users', userCredential.user.uid), {
+      email: newMember.email,
+      name: newMember.name,
+      role: newMember.role,
+      primaryHouse: newMember.primaryHouse,
+      houses: houses,
+      createdBy: currentUser.uid,
+      createdAt: serverTimestamp()
+    });
+    
+    // Reset form and close dialog
+    setNewMember({
+      email: '',
+      name: '',
+      role: '',
+      primaryHouse: '',
+      additionalHouses: [],
+      password: ''
+    });
+    setShowAddMemberDialog(false);
+    
+    alert('Team member added successfully!');
+  } catch (error) {
+    console.error('Error adding team member:', error);
+    alert(`Error adding team member: ${error.message}`);
+  }
+};
+
+// Handle editing a team member
+const handleEditMember = (member) => {
+  setSelectedMember(member);
+  setShowEditMemberDialog(true);
+};
+
+// Handle updating a team member
+const handleUpdateMember = async (e) => {
+  e.preventDefault();
+  try {
+    // Ensure primary house is always in houses array
+    let houses = selectedMember.houses || [];
+    if (!houses.includes(selectedMember.primaryHouse)) {
+      houses.push(selectedMember.primaryHouse);
+    }
+    
+    // Filter out any undefined values
+    houses = houses.filter(house => house !== undefined);
+    
+    // Update user document
+    await updateDoc(doc(db, 'users', selectedMember.id), {
+      name: selectedMember.name,
+      role: selectedMember.role,
+      primaryHouse: selectedMember.primaryHouse,
+      houses: houses,
+      updatedBy: currentUser.uid,
+      updatedAt: serverTimestamp()
+    });
+    
+    setShowEditMemberDialog(false);
+    alert('Team member updated successfully!');
+  } catch (error) {
+    console.error('Error updating team member:', error);
+    alert(`Error updating team member: ${error.message}`);
+  }
+};
+
+// Handle deleting a team member
+const handleDeleteMember = async (memberId, memberEmail) => {
+  if (!isManager || !memberId) return;
+  
+  // Confirm deletion
+  if (window.confirm(`Are you sure you want to delete ${memberEmail}? This action cannot be undone.`)) {
+    try {
+      // Mark as inactive instead of fully deleting
+      await updateDoc(doc(db, 'users', memberId), {
+        active: false,
+        deletedAt: serverTimestamp(),
+        deletedBy: currentUser.uid
+      });
+      
+      // Update local state
+      setTeamMembers(prev => prev.filter(member => member.id !== memberId));
+      
+      alert('Team member deleted successfully');
+    } catch (error) {
+      console.error('Error deleting team member:', error);
+      alert(`Error deleting team member: ${error.message}`);
+    }
+  }
+};
+
+// Handle password reset
+const handleResetPassword = async (userEmail) => {
+  if (!userEmail) {
+    alert('Email address is required for password reset');
+    return;
+  }
+  
+  try {
+    await sendPasswordResetEmail(auth, userEmail);
+    alert(`Password reset email sent to ${userEmail}`);
+  } catch (error) {
+    console.error('Error sending password reset email:', error);
+    alert(`Error: ${error.message}`);
+  }
+};
 // Resource Upload Functions
 const handleUpload = async (type) => {
   if ((type === 'training' && !trainingFile) || (type === 'support' && !supportFile)) {
@@ -427,6 +638,11 @@ const handleUpload = async (type) => {
   
   const file = type === 'training' ? trainingFile : supportFile;
   const fileName = type === 'training' ? trainingFileName : supportFileName;
+  
+  if (!file || !fileName) {
+    alert('Both file and name are required');
+    return;
+  }
   
   // Create a unique file name
   const timestamp = new Date().getTime();
@@ -507,7 +723,7 @@ const handleUpload = async (type) => {
 };
 
 const deleteResource = async (resourceId, type) => {
-  if (!isManager) return;
+  if (!isManager || !resourceId || !type) return;
   
   if (window.confirm('Are you sure you want to delete this resource?')) {
     try {
@@ -581,6 +797,7 @@ useEffect(() => {
     loadResources();
   }
 }, [currentUser]);
+
 // Check-in and Support Handlers
 const handleCheckInSubmit = async (e) => {
   e.preventDefault();
@@ -630,7 +847,6 @@ const handleCheckInSubmit = async (e) => {
     alert('Error submitting check-in');
   }
 };
-
 // Debrief and Strategy Handlers
 const handleDebriefSubmit = async (e) => {
   e.preventDefault();
@@ -710,7 +926,8 @@ const handleSupportRequest = async (requestId) => {
     alert('Error handling support request');
   }
 };
-// Strategy Review Functions
+
+// Strategy Review Functions - UPDATED to handle archived strategies properly
 const handleStrategyReview = async (strategyId, action, highlighted = false) => {
   try {
     const strategyRef = doc(db, 'strategies', strategyId);
@@ -738,23 +955,49 @@ const handleStrategyReview = async (strategyId, action, highlighted = false) => 
     }
 
     // Update local state
-    setPendingStrategies(prev => prev.filter(s => s.id !== strategyId));
-    
     if (action === 'approve') {
-      const approvedStrategy = pendingStrategies.find(s => s.id === strategyId);
-      if (approvedStrategy) {
-        setApprovedStrategies(prev => [
-          { ...approvedStrategy, reviewedAt: new Date(), highlighted },
-          ...prev
-        ]);
+      // If we're approving from the archived section
+      if (archivedStrategies.some(s => s.id === strategyId)) {
+        const restoredStrategy = archivedStrategies.find(s => s.id === strategyId);
+        if (restoredStrategy) {
+          setArchivedStrategies(prev => prev.filter(s => s.id !== strategyId));
+          setApprovedStrategies(prev => [
+            { ...restoredStrategy, reviewedAt: new Date(), highlighted },
+            ...prev
+          ]);
+        }
+      } else {
+        // If we're approving from the pending section
+        setPendingStrategies(prev => prev.filter(s => s.id !== strategyId));
+        const approvedStrategy = pendingStrategies.find(s => s.id === strategyId);
+        if (approvedStrategy) {
+          setApprovedStrategies(prev => [
+            { ...approvedStrategy, reviewedAt: new Date(), highlighted },
+            ...prev
+          ]);
+        }
       }
     } else if (action === 'archive') {
-      const archivedStrategy = pendingStrategies.find(s => s.id === strategyId);
-      if (archivedStrategy) {
-        setArchivedStrategies(prev => [
-          { ...archivedStrategy, archivedAt: new Date() },
-          ...prev
-        ]);
+      // If we're archiving from the approved section
+      if (approvedStrategies.some(s => s.id === strategyId)) {
+        const archivedStrategy = approvedStrategies.find(s => s.id === strategyId);
+        if (archivedStrategy) {
+          setApprovedStrategies(prev => prev.filter(s => s.id !== strategyId));
+          setArchivedStrategies(prev => [
+            { ...archivedStrategy, archivedAt: new Date() },
+            ...prev
+          ]);
+        }
+      } else {
+        // If we're archiving from the pending section
+        setPendingStrategies(prev => prev.filter(s => s.id !== strategyId));
+        const archivedStrategy = pendingStrategies.find(s => s.id === strategyId);
+        if (archivedStrategy) {
+          setArchivedStrategies(prev => [
+            { ...archivedStrategy, archivedAt: new Date() },
+            ...prev
+          ]);
+        }
       }
     }
 
@@ -763,7 +1006,6 @@ const handleStrategyReview = async (strategyId, action, highlighted = false) => 
     alert('Error reviewing strategy');
   }
 };
-
 // Enhanced On-Call Schedule Management
 const handleDateSelection = (date) => {
   const selectedDate = new Date(date);
@@ -1671,6 +1913,13 @@ return (
       >
         Monthly Focus
       </button>
+      {/* New Team Management Tab */}
+      <button 
+        className={`tab-button ${activeManagerTab === 'team-management' ? 'active' : ''}`}
+        onClick={() => setActiveManagerTab('team-management')}
+      >
+        Team Management
+      </button>
     </div>
 
     <div className="tab-content">
@@ -1791,6 +2040,40 @@ return (
         </div>
       )}
 
+      {/* NEW: Archived Tab Content */}
+      {activeManagerTab === 'archived' && (
+        <div className="archived-strategies-section">
+          <h3>Archived Strategies</h3>
+          <div className="strategies-grid">
+            {archivedStrategies.length === 0 ? (
+              <p className="no-data">No archived strategies</p>
+            ) : (
+              archivedStrategies.map(strategy => (
+                <div key={strategy.id} className="strategy-card">
+                  <div className="strategy-header">
+                    <span>From: {strategy.userEmail}</span>
+                    <span className="timestamp">
+                      {new Date(strategy.timestamp?.seconds * 1000).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div className="strategy-content">
+                    <p><strong>Category:</strong> {strategy.category}</p>
+                    <p>{strategy.content}</p>
+                  </div>
+                  <div className="strategy-actions">
+                    <button 
+                      onClick={() => handleStrategyReview(strategy.id, 'approve', false)}
+                      className="black-white-button"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
       {activeManagerTab === 'oncall' && (
         <div className="oncall-section">
           <h3>On-Call Schedule</h3>
@@ -1889,6 +2172,7 @@ return (
                 ))}
             </select>
           </div>
+
           {/* On-Call Schedule Form */}
           <form onSubmit={(e) => {
             e.preventDefault();
@@ -2047,6 +2331,80 @@ return (
           </form>
         </div>
       )}
+      {/* Team Management Tab Content */}
+      {activeManagerTab === 'team-management' && (
+        <div className="team-management-section">
+          <h3>Team Management</h3>
+          
+          {/* House selector for managers with multiple houses */}
+          {currentUser.houses && Array.isArray(currentUser.houses) && currentUser.houses.length > 1 && (
+            <div className="house-selector-container">
+              <h4>Managing team for:</h4>
+              <select 
+                value={selectedHouse || currentUser.primaryHouse || ''}
+                onChange={(e) => setSelectedHouse(e.target.value)}
+                className="black-white-select"
+              >
+                {currentUser.houses.map(house => (
+                  house && <option key={house} value={house}>{house}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          
+          {/* Team Members List */}
+          <div className="team-members-list">
+            <h4>Current Team Members ({teamMembers.length})</h4>
+            <div className="team-members-grid">
+              {teamMembers.map(member => (
+                <div key={member.id} className="team-member-card">
+                  <div className="team-member-header">
+                    <h5>{member.name || member.email}</h5>
+                    <span className={`role-badge ${member.role}`}>
+                      {member.role === 'manager' ? 'Manager' : 'Team Member'}
+                    </span>
+                  </div>
+                  <div className="team-member-details">
+                    <p><strong>Email:</strong> {member.email}</p>
+                    <p><strong>House:</strong> {member.primaryHouse}</p>
+                    {member.houses && member.houses.length > 1 && (
+                      <p><strong>Additional Houses:</strong> {member.houses.filter(h => h !== member.primaryHouse).join(', ')}</p>
+                    )}
+                  </div>
+                  <div className="team-member-actions">
+                    <button 
+                      onClick={() => handleEditMember(member)}
+                      className="black-white-button"
+                    >
+                      Edit
+                    </button>
+                    <button 
+                      onClick={() => handleResetPassword(member.email)}
+                      className="black-white-button secondary"
+                    >
+                      Reset Password
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteMember(member.id, member.email)}
+                      className="black-white-button danger"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            
+            {/* Add New Team Member Button */}
+            <button 
+              onClick={() => setShowAddMemberDialog(true)}
+              className="black-white-button mt-20"
+            >
+              Add New Team Member
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   </div>
 )}
@@ -2191,7 +2549,6 @@ return (
     </div>
   </div>
 )}
-
 {/* Support Dialog */}
 {showSupportDialog && (
   <div className="dialog-overlay">
@@ -2227,6 +2584,244 @@ return (
     </div>
   </div>
 )}
+
+{/* Add New Team Member Dialog */}
+{showAddMemberDialog && (
+  <div className="dialog-overlay">
+    <div className="dialog-card">
+      <h3>Add New Team Member</h3>
+      <form onSubmit={handleAddMember}>
+        <div className="form-group">
+          <label>Email</label>
+          <input 
+            type="email" 
+            value={newMember.email}
+            onChange={(e) => setNewMember({...newMember, email: e.target.value})}
+            required
+            className="black-white-input"
+          />
+        </div>
+        
+        <div className="form-group">
+          <label>Name</label>
+          <input 
+            type="text" 
+            value={newMember.name}
+            onChange={(e) => setNewMember({...newMember, name: e.target.value})}
+            required
+            className="black-white-input"
+          />
+        </div>
+        
+        <div className="form-group">
+          <label>Role</label>
+          <select 
+            value={newMember.role}
+            onChange={(e) => setNewMember({...newMember, role: e.target.value})}
+            required
+            className="black-white-select"
+          >
+            <option value="">Select Role</option>
+            <option value="user">Team Member</option>
+            <option value="manager">Manager</option>
+          </select>
+        </div>
+        
+        <div className="form-group">
+          <label>Primary House</label>
+          <select 
+            value={newMember.primaryHouse}
+            onChange={(e) => setNewMember({...newMember, primaryHouse: e.target.value})}
+            required
+            className="black-white-select"
+          >
+            <option value="">Select House</option>
+            {houses.map(house => (
+              <option key={house} value={house}>{house}</option>
+            ))}
+          </select>
+        </div>
+        
+        {newMember.role === 'manager' && (
+          <div className="form-group">
+            <label>Additional Houses (for managers)</label>
+            <div className="checkbox-group">
+              {houses.map(house => (
+                house !== newMember.primaryHouse && (
+                  <label key={house} className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={newMember.additionalHouses.includes(house)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setNewMember({
+                            ...newMember, 
+                            additionalHouses: [...newMember.additionalHouses, house]
+                          });
+                        } else {
+                          setNewMember({
+                            ...newMember, 
+                            additionalHouses: newMember.additionalHouses.filter(h => h !== house)
+                          });
+                        }
+                      }}
+                      className="black-white-checkbox"
+                    />
+                    {house}
+                  </label>
+                )
+              ))}
+            </div>
+          </div>
+        )}
+        
+        <div className="form-group">
+          <label>Temporary Password</label>
+          <div className="password-input-group">
+            <input 
+              type={showPassword ? "text" : "password"}
+              value={newMember.password}
+              onChange={(e) => setNewMember({...newMember, password: e.target.value})}
+              required
+              className="black-white-input"
+            />
+            <button 
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              className="password-toggle"
+            >
+              {showPassword ? "Hide" : "Show"}
+            </button>
+          </div>
+        </div>
+        
+        <div className="dialog-actions">
+          <button 
+            type="button"
+            onClick={() => setShowAddMemberDialog(false)}
+            className="black-white-button secondary"
+          >
+            Cancel
+          </button>
+          <button 
+            type="submit"
+            className="black-white-button"
+          >
+            Add Team Member
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+)}
+
+{/* Edit Team Member Dialog */}
+{showEditMemberDialog && selectedMember && (
+  <div className="dialog-overlay">
+    <div className="dialog-card">
+      <h3>Edit Team Member</h3>
+      <form onSubmit={handleUpdateMember}>
+        <div className="form-group">
+          <label>Email</label>
+          <input 
+            type="email" 
+            value={selectedMember.email}
+            disabled
+            className="black-white-input disabled"
+          />
+        </div>
+        
+        <div className="form-group">
+          <label>Name</label>
+          <input 
+            type="text" 
+            value={selectedMember.name}
+            onChange={(e) => setSelectedMember({...selectedMember, name: e.target.value})}
+            required
+            className="black-white-input"
+          />
+        </div>
+        
+        <div className="form-group">
+          <label>Role</label>
+          <select 
+            value={selectedMember.role}
+            onChange={(e) => setSelectedMember({...selectedMember, role: e.target.value})}
+            required
+            className="black-white-select"
+          >
+            <option value="user">Team Member</option>
+            <option value="manager">Manager</option>
+          </select>
+        </div>
+        
+        <div className="form-group">
+          <label>Primary House</label>
+          <select 
+            value={selectedMember.primaryHouse}
+            onChange={(e) => setSelectedMember({...selectedMember, primaryHouse: e.target.value})}
+            required
+            className="black-white-select"
+          >
+            {houses.map(house => (
+              <option key={house} value={house}>{house}</option>
+            ))}
+          </select>
+        </div>
+        
+        {selectedMember.role === 'manager' && (
+          <div className="form-group">
+            <label>Additional Houses (for managers)</label>
+            <div className="checkbox-group">
+              {houses.map(house => (
+                house !== selectedMember.primaryHouse && (
+                  <label key={house} className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={selectedMember.houses?.includes(house) || false}
+                      onChange={(e) => {
+                        const currentHouses = selectedMember.houses || [selectedMember.primaryHouse];
+                        if (e.target.checked) {
+                          setSelectedMember({
+                            ...selectedMember, 
+                            houses: [...currentHouses, house].filter((v, i, a) => a.indexOf(v) === i)
+                          });
+                        } else {
+                          setSelectedMember({
+                            ...selectedMember, 
+                            houses: currentHouses.filter(h => h !== house)
+                          });
+                        }
+                      }}
+                      className="black-white-checkbox"
+                    />
+                    {house}
+                  </label>
+                )
+              ))}
+            </div>
+          </div>
+        )}
+        
+        <div className="dialog-actions">
+          <button 
+            type="button"
+            onClick={() => setShowEditMemberDialog(false)}
+            className="black-white-button secondary"
+          >
+            Cancel
+          </button>
+          <button 
+            type="submit"
+            className="black-white-button"
+          >
+            Update Team Member
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+)}
         </>
       ) : (
         <div className="login-message">
@@ -2239,4 +2834,3 @@ return (
 }
 
 export default App;
-
